@@ -46,6 +46,15 @@ class BlockscoutClient:
             f"{self.explorer_base}/tokens/{token_address}",
         )
 
+    async def token_type(self, token_address: str) -> Optional[str]:
+        """Return the token standard as reported by Blockscout, e.g. 'ERC-20',
+        'ERC-721', 'ERC-1155'. Returns None if the token isn't indexed yet."""
+        info = await self.token_info(token_address)
+        if not info:
+            return None
+        t = info.get("type")
+        return str(t).upper() if t else None
+
     async def token_holders(self, token_address: str) -> Optional[dict[str, Any]]:
         return await self._get_first_ok(
             f"{self.rest_base}/tokens/{token_address}/holders",

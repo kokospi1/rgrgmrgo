@@ -137,12 +137,25 @@ class TokenScanner:
             seen_in_batch.add(token_addr)
             if not self.storage.claim_token_for_scan(token_addr, "mint_transfer_seen"):
                 continue
+            # Skip NFTs (ERC-721/1155). They share the ERC-20 Transfer event topic, so
+            # things like "Uniswap V3 Positions" NFTs otherwise slip through and then
+            # 404 on every DEX price lookup. Unknown/not-yet-indexed tokens are kept.
+            if await self._is_non_fungible(token_addr):
+                log.info("Skipping non-ERC-20 token %s", token_addr)
+                continue
             try:
                 candidate = await self._build_candidate(token_addr, item)
                 candidates.append(candidate)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Failed to build token candidate %s: %s", token_addr, exc)
         return candidates
+
+    async def _is_non_fungible(self, token_addr: str) -> bool:
+        """True only when Blockscout explicitly reports a non-ERC-20 standard."""
+        if not self.blockscout:
+            return False
+        token_type = await self.blockscout.token_type(token_addr)
+        return token_type is not None and token_type != "ERC-20"
 
     async def get_launch_price(self, token: TokenCandidate) -> Optional[float]:
         """Return the token's initial (launch) USD price, or None if not available yet."""

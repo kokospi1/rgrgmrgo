@@ -12,6 +12,15 @@ from .rate_limiter import ApiKeyPool
 log = logging.getLogger(__name__)
 
 
+class HttpStatusError(RuntimeError):
+    """Raised for non-retryable HTTP client errors (4xx). Carries the status code
+    so callers can quietly treat e.g. 404 as 'resource not found yet'."""
+
+    def __init__(self, status: int, body: str = ""):
+        self.status = status
+        super().__init__(f"{status}: {body[:200]}")
+
+
 class HttpJsonClient:
     def __init__(self, session: aiohttp.ClientSession, pool: ApiKeyPool, key_mode: str, header_name: str = "x-api-key", query_name: str = "apikey"):
         self.session = session
@@ -29,7 +38,7 @@ class HttpJsonClient:
     async def request(self, method: str, url: str, params: Optional[dict[str, Any]] = None, json_body: Optional[dict[str, Any]] = None, timeout: int = 20) -> Any:
         params = dict(params or {})
         last_error: Exception | None = None
-        for _ in range(5):
+        for attempt in range(5):
             key = await self.pool.acquire()
             headers = {}
             if key and self.key_mode == "header":
@@ -39,16 +48,26 @@ class HttpJsonClient:
             try:
                 async with self.session.request(method, url, params=params, json=json_body, headers=headers, timeout=timeout) as resp:
                     text = await resp.text()
+                    # Auth / rate-limit: rotate to the next key and retry.
                     if resp.status in (401, 403, 429):
                         self.pool.mark_exhausted(key, seconds=60 if resp.status == 429 else 3600)
-                        last_error = RuntimeError(f"{resp.status}: {text[:200]}")
+                        last_error = HttpStatusError(resp.status, text)
                         continue
+                    # Other client errors (404 not found, 400 bad request, ...) are
+                    # deterministic: the resource does not exist / the params are wrong.
+                    # Do NOT retry and do NOT log a scary warning — the caller decides
+                    # how to handle it (e.g. "token not listed on the DEX yet").
+                    if 400 <= resp.status < 500:
+                        raise HttpStatusError(resp.status, text)
                     resp.raise_for_status()
                     if not text:
                         return None
                     return await resp.json(content_type=None)
+            except HttpStatusError:
+                raise
             except Exception as exc:  # noqa: BLE001
+                # Transient/network/5xx error — retry a few times, log quietly.
                 last_error = exc
-                log.warning("HTTP %s %s failed: %s", method, url, exc)
+                log.debug("HTTP %s %s transient failure (attempt %d): %s", method, url, attempt + 1, exc)
                 await asyncio.sleep(0.2)
         raise last_error or RuntimeError("request failed")
