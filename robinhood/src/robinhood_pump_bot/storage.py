@@ -32,7 +32,7 @@ class Storage:
             CREATE TABLE IF NOT EXISTS watchlist (
                 address TEXT PRIMARY KEY,
                 data TEXT NOT NULL,
-                base_price REAL,
+                initial_price REAL,
                 created_at TEXT NOT NULL,
                 added_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -72,10 +72,10 @@ class Storage:
         self.conn.execute("INSERT OR IGNORE INTO alerted_tokens(address) VALUES (?)", (address.lower(),))
         self.conn.commit()
 
-    def add_to_watchlist(self, address: str, data: str, created_at: str, base_price: Optional[float] = None) -> None:
+    def add_to_watchlist(self, address: str, data: str, created_at: str, initial_price: Optional[float] = None) -> None:
         self.conn.execute(
-            "INSERT OR IGNORE INTO watchlist(address, data, base_price, created_at) VALUES (?, ?, ?, ?)",
-            (address.lower(), data, base_price, created_at),
+            "INSERT OR IGNORE INTO watchlist(address, data, initial_price, created_at) VALUES (?, ?, ?, ?)",
+            (address.lower(), data, initial_price, created_at),
         )
         self.conn.commit()
 
@@ -84,11 +84,11 @@ class Storage:
         return row is not None
 
     def get_watchlist(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute("SELECT address, data, base_price, created_at FROM watchlist ORDER BY added_at").fetchall()
-        return [{"address": r["address"], "data": r["data"], "base_price": r["base_price"], "created_at": r["created_at"]} for r in rows]
+        rows = self.conn.execute("SELECT address, data, initial_price, created_at FROM watchlist ORDER BY added_at").fetchall()
+        return [{"address": r["address"], "data": r["data"], "initial_price": r["initial_price"], "created_at": r["created_at"]} for r in rows]
 
-    def set_watchlist_base_price(self, address: str, base_price: float) -> None:
-        self.conn.execute("UPDATE watchlist SET base_price=? WHERE address=?", (base_price, address.lower()))
+    def set_watchlist_initial_price(self, address: str, initial_price: float) -> None:
+        self.conn.execute("UPDATE watchlist SET initial_price=? WHERE address=?", (initial_price, address.lower()))
         self.conn.commit()
 
     def remove_from_watchlist(self, address: str) -> None:

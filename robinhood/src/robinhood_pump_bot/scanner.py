@@ -144,10 +144,17 @@ class TokenScanner:
                 log.warning("Failed to build token candidate %s: %s", token_addr, exc)
         return candidates
 
+    async def get_launch_price(self, token: TokenCandidate) -> Optional[float]:
+        """Return the token's initial (launch) USD price, or None if not available yet."""
+        if not self.dexpaprika:
+            return None
+        return await self.dexpaprika.launch_price(token.address)
+
     async def enrich_metrics(self, token: TokenCandidate) -> TokenCandidate:
         """Refresh live metrics. Price/marketcap/liquidity come from DexPaprika first,
         with DexScreener and the Relay price as fallbacks. The pump percentage is NOT
-        derived here — it is computed by the monitor from a stored base price."""
+        derived here — it is computed by the monitor as growth from the token's
+        initial (launch) price (see get_launch_price)."""
         if self.blockscout:
             info = await self.blockscout.token_info(token.address)
             if info:

@@ -228,8 +228,9 @@ async def _discover_into_watchlist() -> None:
 
 
 async def _process_watchlist(app: Application, cfg) -> None:
-    """Re-check every watched token each cycle: refresh price, compute pump from the
-    first seen (base) price, alert on a match, and drop tokens once they expire."""
+    """Re-check every watched token each cycle: refresh the live price, compute the
+    pump as growth from the token's INITIAL (launch) price, alert on a match, and
+    drop tokens once they expire."""
     for entry in runtime.storage.get_watchlist():
         token = TokenCandidate.from_json(entry["data"])
 
@@ -241,14 +242,17 @@ async def _process_watchlist(app: Application, cfg) -> None:
         token = await runtime.scanner.enrich_metrics(token)
         current_price = token.metrics.price_usd
 
-        base_price = entry["base_price"]
-        if base_price is None and current_price:
-            base_price = current_price
-            runtime.storage.set_watchlist_base_price(token.address, base_price)
+        # Initial (launch) price: the token's very first traded price, fetched once
+        # from the oldest pool's first OHLCV candle and cached in the watchlist.
+        initial_price = entry["initial_price"]
+        if initial_price is None:
+            initial_price = await runtime.scanner.get_launch_price(token)
+            if initial_price:
+                runtime.storage.set_watchlist_initial_price(token.address, initial_price)
 
-        # Pump = growth from the first price we ever observed for this token.
-        if base_price and current_price and base_price > 0:
-            token.metrics.price_change_percent = (current_price / base_price - 1.0) * 100.0
+        # Pump = growth from the token's initial launch price.
+        if initial_price and current_price and initial_price > 0:
+            token.metrics.price_change_percent = (current_price / initial_price - 1.0) * 100.0
 
         if passes_filters(token, cfg) and not runtime.storage.was_alerted(token.address):
             await app.bot.send_message(
