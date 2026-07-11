@@ -282,10 +282,10 @@ async def monitor_loop(app: Application):
 
 
 async def post_init(app: Application) -> None:
+    # Runs after the bot is initialized and the event loop is running, but before
+    # polling starts. Start HTTP clients and launch the background monitor here
+    # (PTB 21+ removed the separate post_startup hook).
     app.bot_data["session"] = await runtime.start_clients()
-
-
-async def post_startup(app: Application) -> None:
     runtime.monitor_task = asyncio.create_task(monitor_loop(app), name="robinhood-monitor")
 
 
@@ -302,7 +302,7 @@ async def post_shutdown(app: Application) -> None:
 
 
 def build_application() -> Application:
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).post_startup(post_startup).post_shutdown(post_shutdown).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
     for cmd, handler in {
         "start": start_cmd,
         "status": status_cmd,
