@@ -120,7 +120,7 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Для разработки/тестов дополнительно:
+Для запуска тестов (`pytest`) обязательно доустанови dev-зависимости, иначе `pytest` не найдётся:
 
 ```bat
 pip install -r requirements-dev.txt
@@ -128,18 +128,26 @@ pip install -r requirements-dev.txt
 
 ### 6. Проверь, что код рабочий
 
+Запускай pytest именно как `python -m pytest` — так используется pytest из активированного venv, а `src` автоматически добавляется в путь (настроено в `pyproject.toml`):
+
 ```bat
-pytest -q
+python -m pytest -q
 python -m compileall -q src bot.py
 ```
 
 Ожидаемый результат тестов:
 
 ```text
-14 passed
+17 passed
 ```
 
-### 7. Запусти бота
+### 7. Настрой `.env` (обязательно перед запуском)
+
+Скопируй `.env.example` в `.env` и заполни токен бота и ключи — см. раздел ниже [«Настройка ключей через `.env`»](#настройка-ключей-через-env). Без `TELEGRAM_BOT_TOKEN` бот при запуске сразу упадёт с понятной ошибкой.
+
+### 8. Запусти бота
+
+Запускай из папки `C:\robinhood` (корневой `bot.py` сам подключает `src`, устанавливать пакет отдельно не нужно):
 
 ```bat
 python bot.py
@@ -275,13 +283,34 @@ cd C:\robinhood
 pip install -r requirements.txt
 ```
 
-### `pytest is not recognized`
+### `ModuleNotFoundError: No module named 'robinhood_pump_bot'`
 
-Установи dev requirements:
+Пакет лежит в `src\`, а не в корне. Корневой `bot.py` сам добавляет `src` в путь, поэтому запускать нужно именно его из папки проекта:
 
 ```bat
-pip install -r requirements-dev.txt
+cd C:\robinhood
+python bot.py
 ```
+
+Не запускай `python src\robinhood_pump_bot\bot.py` напрямую — так путь не подключится. Если всё же нужно ставить пакет в окружение, можно один раз выполнить editable-установку:
+
+```bat
+pip install -e .
+```
+
+### `pytest is not recognized` / pytest падает
+
+1. Установи dev requirements:
+
+   ```bat
+   pip install -r requirements-dev.txt
+   ```
+
+2. Запускай через модуль (использует pytest из venv и подхватывает `src`):
+
+   ```bat
+   python -m pytest -q
+   ```
 
 ### Telegram `Conflict: terminated by other getUpdates request`
 
@@ -302,7 +331,9 @@ pip install -r requirements-dev.txt
 ```bat
 cd C:\robinhood
 .venv\Scripts\activate.bat
-pytest -q
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+python -m pytest -q
 python -m compileall -q src bot.py
 python bot.py
 ```
