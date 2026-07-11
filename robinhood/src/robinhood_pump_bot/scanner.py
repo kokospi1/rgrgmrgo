@@ -9,6 +9,7 @@ import aiohttp
 
 from .blockscout import BlockscoutClient
 from .dex import DexScreenerClient
+from .dexpaprika import DexPaprikaClient
 from .models import TokenCandidate, TokenMetrics
 from .relay import RelayClient
 from .storage import Storage
@@ -106,12 +107,13 @@ class RobinhoodRpcClient:
 
 
 class TokenScanner:
-    def __init__(self, storage: Storage, rpc: RobinhoodRpcClient, relay: RelayClient, dex: DexScreenerClient, blockscout: BlockscoutClient | None = None):
+    def __init__(self, storage: Storage, rpc: RobinhoodRpcClient, relay: RelayClient, dex: DexScreenerClient, blockscout: BlockscoutClient | None = None, dexpaprika: DexPaprikaClient | None = None):
         self.storage = storage
         self.rpc = rpc
         self.relay = relay
         self.dex = dex
         self.blockscout = blockscout
+        self.dexpaprika = dexpaprika
 
     async def discover_new_tokens(self, lookback_blocks: int) -> list[TokenCandidate]:
         latest = await self.rpc.block_number()
@@ -143,6 +145,9 @@ class TokenScanner:
         return candidates
 
     async def enrich_metrics(self, token: TokenCandidate) -> TokenCandidate:
+        """Refresh live metrics. Price/marketcap/liquidity come from DexPaprika first,
+        with DexScreener and the Relay price as fallbacks. The pump percentage is NOT
+        derived here — it is computed by the monitor from a stored base price."""
         if self.blockscout:
             info = await self.blockscout.token_info(token.address)
             if info:
@@ -154,14 +159,29 @@ class TokenScanner:
             token.metrics.developer_share_percent = dev_share
             token.metrics.top10_share_percent = top10_share
 
-        pair = await self.dex.token_pair(token.address)
-        if pair:
-            token.metrics.price_usd = _to_float(pair.get("priceUsd")) or token.metrics.price_usd
-            changes = pair.get("priceChange") or {}
-            token.metrics.price_change_percent = _to_float(changes.get("h1") or changes.get("m5") or changes.get("h24"))
-            token.metrics.market_cap_usd = _to_float(pair.get("marketCap") or pair.get("fdv")) or token.metrics.market_cap_usd
-            token.metrics.liquidity_usd = _to_float((pair.get("liquidity") or {}).get("usd"))
-            token.dex_url = pair.get("url")
+        # Primary source: DexPaprika (Robinhood Chain).
+        if self.dexpaprika:
+            summary = await self.dexpaprika.token_summary(token.address)
+            if summary:
+                token.symbol = summary.get("symbol") or token.symbol
+                token.name = summary.get("name") or token.name
+                if summary.get("price_usd") is not None:
+                    token.metrics.price_usd = summary["price_usd"]
+                if summary.get("market_cap_usd") is not None:
+                    token.metrics.market_cap_usd = summary["market_cap_usd"]
+                if summary.get("liquidity_usd") is not None:
+                    token.metrics.liquidity_usd = summary["liquidity_usd"]
+
+        # Fallback source: DexScreener.
+        if token.metrics.price_usd is None or token.metrics.liquidity_usd is None:
+            pair = await self.dex.token_pair(token.address)
+            if pair:
+                token.metrics.price_usd = token.metrics.price_usd or _to_float(pair.get("priceUsd"))
+                token.metrics.market_cap_usd = token.metrics.market_cap_usd or _to_float(pair.get("marketCap") or pair.get("fdv"))
+                if token.metrics.liquidity_usd is None:
+                    token.metrics.liquidity_usd = _to_float((pair.get("liquidity") or {}).get("usd"))
+                token.dex_url = token.dex_url or pair.get("url")
+
         if token.metrics.price_usd is None:
             token.metrics.price_usd = await self.relay.token_price(token.address)
         if token.metrics.market_cap_usd is None and token.metrics.price_usd and token.total_supply:

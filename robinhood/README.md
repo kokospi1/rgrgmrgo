@@ -20,6 +20,17 @@
   - `/quote`: 50 req/min
   - `/requests`, `/transactions/status`, other: 200 req/min
 - Relay API key передается через header `x-api-key`; с ключом лимиты выше. Robinhood Chain есть в `/chains`, но `/currencies/token/price` для многих новых токенов может отдавать `400`, если токен не в их базе.
+- DexPaprika (публичная бета, без ключа) — **основной источник** цены, market cap (FDV) и ликвидности для Robinhood Chain:
+  - `GET https://api.dexpaprika.com/networks/robinhood/tokens/{token}` → `summary.price_usd`, `summary.fdv`, `summary.liquidity_usd`, `summary.pools`.
+  - Проверено вживую на токенах Robinhood Chain (например VEX/WETH). DexScreener и Relay остаются как fallback.
+  - DexPaprika **не** отдаёт готовый % изменения цены, поэтому pump считается от базовой цены (см. ниже).
+
+## Логика обнаружения пампа (watchlist)
+
+- Как только найден новый токен (mint Transfer в RPC logs), он попадает в SQLite-таблицу `watchlist` и наблюдается **весь период `max_age_minutes`** (по умолчанию 30 мин).
+- Каждый цикл бот перепроверяет все токены из watchlist: обновляет цену через DexPaprika и считает **pump = рост от первой увиденной (базовой) цены** `base_price`.
+- Как только токен проходит фильтры — уходит алерт, токен помечается в `alerted_tokens` и удаляется из watchlist. По истечении возраста токен просто удаляется из watchlist.
+- Это исправляет ситуацию, когда токен пампится не сразу в момент создания, а через несколько минут.
 
 ## Структура проекта
 
@@ -216,7 +227,30 @@ SQLite таблица `scanned_tokens` делает atomic `INSERT OR IGNORE` п
 - per-hour limit;
 - при `401/403/429` ключ временно выключается и используется следующий.
 
-Стартовые ключи зашиты в `src/robinhood_pump_bot/bot.py`, как просили.
+## Настройка ключей через `.env`
+
+Ключи и токен бота теперь читаются из переменных окружения (файл `.env`), а не хардкодятся в коде.
+
+1. Скопируй `.env.example` в `.env`:
+
+   ```bat
+   copy .env.example .env
+   ```
+
+2. Заполни значения в `.env`:
+
+   ```text
+   TELEGRAM_BOT_TOKEN=токен_от_BotFather
+   ALLOWED_TELEGRAM_USER_ID=8025094859
+   BLOCKSCOUT_API_KEYS=key1,key2,key3
+   RELAY_API_KEYS=key1,key2
+   DEXPAPRIKA_NETWORK=robinhood
+   ```
+
+   - `BLOCKSCOUT_API_KEYS` и `RELAY_API_KEYS` принимают несколько ключей через запятую — бот их ротирует.
+   - Файл `.env` добавлен в `.gitignore` и не попадёт в git.
+
+> Важно по безопасности: ключи, которые ранее лежали в чате/коде, считай скомпрометированными — перевыпусти токен бота у @BotFather и ротируй API-ключи.
 
 ## Что делать при ошибках
 

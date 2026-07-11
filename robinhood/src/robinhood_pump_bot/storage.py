@@ -29,6 +29,13 @@ class Storage:
                 address TEXT PRIMARY KEY,
                 alerted_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS watchlist (
+                address TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                base_price REAL,
+                created_at TEXT NOT NULL,
+                added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS api_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 provider TEXT NOT NULL,
@@ -64,6 +71,33 @@ class Storage:
     def mark_alerted(self, address: str) -> None:
         self.conn.execute("INSERT OR IGNORE INTO alerted_tokens(address) VALUES (?)", (address.lower(),))
         self.conn.commit()
+
+    def add_to_watchlist(self, address: str, data: str, created_at: str, base_price: Optional[float] = None) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO watchlist(address, data, base_price, created_at) VALUES (?, ?, ?, ?)",
+            (address.lower(), data, base_price, created_at),
+        )
+        self.conn.commit()
+
+    def in_watchlist(self, address: str) -> bool:
+        row = self.conn.execute("SELECT 1 FROM watchlist WHERE address=?", (address.lower(),)).fetchone()
+        return row is not None
+
+    def get_watchlist(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT address, data, base_price, created_at FROM watchlist ORDER BY added_at").fetchall()
+        return [{"address": r["address"], "data": r["data"], "base_price": r["base_price"], "created_at": r["created_at"]} for r in rows]
+
+    def set_watchlist_base_price(self, address: str, base_price: float) -> None:
+        self.conn.execute("UPDATE watchlist SET base_price=? WHERE address=?", (base_price, address.lower()))
+        self.conn.commit()
+
+    def remove_from_watchlist(self, address: str) -> None:
+        self.conn.execute("DELETE FROM watchlist WHERE address=?", (address.lower(),))
+        self.conn.commit()
+
+    def watchlist_size(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS c FROM watchlist").fetchone()
+        return int(row["c"]) if row else 0
 
     def add_api_key(self, provider: str, key: str) -> None:
         self.conn.execute("INSERT OR IGNORE INTO api_keys(provider, key) VALUES (?, ?)", (provider, key))

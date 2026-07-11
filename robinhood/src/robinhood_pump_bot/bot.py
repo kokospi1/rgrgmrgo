@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 import aiohttp
+from dotenv import load_dotenv
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from .blockscout import BlockscoutClient
 from .dex import DexScreenerClient
+from .dexpaprika import DexPaprikaClient
 from .filters import passes_filters
 from .formatting import format_alert
 from .http_client import HttpJsonClient
+from .models import TokenCandidate
 from .rate_limiter import ApiKeyPool
 from .relay import RelayClient
 from .scanner import RobinhoodRpcClient, TokenScanner
@@ -22,16 +26,27 @@ from .storage import Storage
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
 
-TELEGRAM_BOT_TOKEN = "8822613933:AAGpeG780lPUYiBFi-DAFPmCyufKipeTifk"
-ALLOWED_TELEGRAM_USER_ID = 8025094859
-BLOCKSCOUT_API_KEYS = [
-    "proapi_eGyz2QN2RzWhoLI1OKRUGmYfIzjjfG8uz1i5YcSaDFI0KvM81SDAoPEktG97zVdIa_cyooV3",
-]
-RELAY_API_KEYS = [
-    "393720ac-2804-4dc4-bd16-871ceea04af8",
-]
+# Load config/secrets from a .env file (see .env.example). Values already present
+# in the real environment take precedence over the file.
+load_dotenv(override=False)
+
+
+def _env_keys(name: str) -> list[str]:
+    """Read a comma/space/newline separated list of API keys from an env var."""
+    raw = os.getenv(name, "")
+    return [k.strip() for k in raw.replace("\n", ",").replace(" ", ",").split(",") if k.strip()]
+
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+ALLOWED_TELEGRAM_USER_ID = int(os.getenv("ALLOWED_TELEGRAM_USER_ID", "8025094859"))
+BLOCKSCOUT_API_KEYS = _env_keys("BLOCKSCOUT_API_KEYS")
+RELAY_API_KEYS = _env_keys("RELAY_API_KEYS")
+DEXPAPRIKA_NETWORK = os.getenv("DEXPAPRIKA_NETWORK", "robinhood")
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 DB_PATH = DATA_DIR / "bot.db"
+
+if not TELEGRAM_BOT_TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN is not set. Copy .env.example to .env and fill it in.")
 
 
 def restricted(fn):
@@ -66,6 +81,7 @@ class BotRuntime:
         blockscout_http = HttpJsonClient(session, self.blockscout_pool, key_mode="query", query_name="apikey")
         relay_http = HttpJsonClient(session, self.relay_pool, key_mode="header", header_name="x-api-key")
         dex_http = HttpJsonClient(session, free_pool, key_mode="none")
+        dexpaprika_http = HttpJsonClient(session, ApiKeyPool([], per_second_limit=5, per_hour_limit=100_000), key_mode="none")
         # Instantiate Blockscout client so API-key rotation is wired and available for next data-source expansion.
         self.blockscout = BlockscoutClient(blockscout_http)
         self.scanner = TokenScanner(
@@ -74,6 +90,7 @@ class BotRuntime:
             relay=RelayClient(relay_http),
             dex=DexScreenerClient(dex_http),
             blockscout=self.blockscout,
+            dexpaprika=DexPaprikaClient(dexpaprika_http, network=DEXPAPRIKA_NETWORK),
         )
         return session
 
@@ -101,6 +118,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"Pump >= {cfg.min_pump_percent}%\n"
         f"Dev share filter: {cfg.dev_share_filter_enabled}, max {cfg.max_dev_share_percent}%\n"
         f"Top10 filter: {cfg.top10_filter_enabled}, max {cfg.max_top10_share_percent}%\n"
+        f"В наблюдении (watchlist): {runtime.storage.watchlist_size()}\n"
         f"Blockscout keys: {len(runtime.storage.list_api_keys('blockscout'))}\n"
         f"Relay keys: {len(runtime.storage.list_api_keys('relay'))}\n"
     )
@@ -199,18 +217,58 @@ async def remove_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("API key удален")
 
 
+async def _discover_into_watchlist() -> None:
+    """Find freshly minted tokens and put them under observation."""
+    candidates = await runtime.scanner.discover_new_tokens(runtime.storage.load_config().lookback_blocks)
+    for token in candidates:
+        if runtime.storage.was_alerted(token.address) or runtime.storage.in_watchlist(token.address):
+            continue
+        runtime.storage.add_to_watchlist(token.address, token.to_json(), token.created_at.isoformat())
+        log.info("Watching new token %s (%s)", token.symbol, token.address)
+
+
+async def _process_watchlist(app: Application, cfg) -> None:
+    """Re-check every watched token each cycle: refresh price, compute pump from the
+    first seen (base) price, alert on a match, and drop tokens once they expire."""
+    for entry in runtime.storage.get_watchlist():
+        token = TokenCandidate.from_json(entry["data"])
+
+        # Expire tokens older than the configured age window.
+        if token.age_minutes > cfg.max_age_minutes:
+            runtime.storage.remove_from_watchlist(token.address)
+            continue
+
+        token = await runtime.scanner.enrich_metrics(token)
+        current_price = token.metrics.price_usd
+
+        base_price = entry["base_price"]
+        if base_price is None and current_price:
+            base_price = current_price
+            runtime.storage.set_watchlist_base_price(token.address, base_price)
+
+        # Pump = growth from the first price we ever observed for this token.
+        if base_price and current_price and base_price > 0:
+            token.metrics.price_change_percent = (current_price / base_price - 1.0) * 100.0
+
+        if passes_filters(token, cfg) and not runtime.storage.was_alerted(token.address):
+            await app.bot.send_message(
+                chat_id=ALLOWED_TELEGRAM_USER_ID,
+                text=format_alert(token),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            runtime.storage.mark_alerted(token.address)
+            runtime.storage.remove_from_watchlist(token.address)
+
+
 async def monitor_loop(app: Application):
     await asyncio.sleep(3)
     while True:
         cfg = runtime.storage.load_config()
         try:
             if not cfg.paused and runtime.scanner:
-                candidates = await runtime.scanner.discover_new_tokens(cfg.lookback_blocks)
-                for token in candidates:
-                    token = await runtime.scanner.enrich_metrics(token)
-                    if passes_filters(token, cfg) and not runtime.storage.was_alerted(token.address):
-                        await app.bot.send_message(chat_id=ALLOWED_TELEGRAM_USER_ID, text=format_alert(token), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-                        runtime.storage.mark_alerted(token.address)
+                await _discover_into_watchlist()
+                await _process_watchlist(app, cfg)
             await asyncio.sleep(cfg.scan_interval_seconds)
         except asyncio.CancelledError:
             raise
