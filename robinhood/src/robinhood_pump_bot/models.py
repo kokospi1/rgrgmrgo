@@ -9,6 +9,7 @@ from typing import Optional
 @dataclass
 class BotConfig:
     # --- core filters ---
+    age_filter_enabled: bool = True
     max_age_minutes: int = 30
     min_pump_percent: float = 50.0
     dev_share_filter_enabled: bool = False

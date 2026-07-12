@@ -122,7 +122,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     cfg = runtime.storage.load_config()
     text = (
         f"Статус: {'PAUSED' if cfg.paused else 'RUNNING'}\n"
-        f"Возраст <= {cfg.max_age_minutes} мин\n"
+        f"Возраст: {'<= ' + str(cfg.max_age_minutes) + ' мин' if cfg.age_filter_enabled else 'ВЫКЛ (без ограничений)'}\n"
         f"Pump >= {cfg.min_pump_percent}%\n"
         f"Dev share: {cfg.dev_share_filter_enabled}, max {cfg.max_dev_share_percent}%\n"
         f"Top10: {cfg.top10_filter_enabled}, max {cfg.max_top10_share_percent}%\n"
@@ -168,6 +168,10 @@ async def _toggle(update: Update, context: ContextTypes.DEFAULT_TYPE, field: str
     runtime.storage.save_config(cfg)
     await update.message.reply_text(f"OK: {field} = {getattr(cfg, field)}")
 
+
+@restricted
+async def toggle_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _toggle(update, context, "age_filter_enabled")
 
 @restricted
 async def set_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -343,7 +347,7 @@ async def _process_one(app: Application, entry: dict, cfg) -> None:
     """Process a single watchlist entry: enrich, detect trigger, send alert."""
     token = TokenCandidate.from_json(entry["data"])
 
-    if token.age_minutes > cfg.max_age_minutes:
+    if cfg.age_filter_enabled and token.age_minutes > cfg.max_age_minutes:
         runtime.storage.remove_from_watchlist(token.address)
         return
 
@@ -513,6 +517,7 @@ def build_application() -> Application:
         # core
         "start": start_cmd,
         "status": status_cmd,
+        "toggle_age": toggle_age,
         "set_age": set_age,
         "set_pump": set_pump,
         "set_dev_share": set_dev_share,
