@@ -96,6 +96,27 @@ class DexPaprikaClient:
             return []
         return data if isinstance(data, list) else []
 
+    async def recent_candles(self, token_address: str, count: int = 3) -> list[dict[str, Any]]:
+        """Return the last `count` closed 5-min OHLCV candles for a token.
+
+        Used by the acceleration detector: compare the open of the oldest returned
+        candle to the close of the newest to measure price movement over the window.
+        Returns an empty list when the token has no pools or no candle data yet."""
+        pools = await self.token_pools(token_address)
+        if not pools:
+            return []
+        pools_with_ts = [(p, _parse_iso_unix(p.get("created_at"))) for p in pools]
+        pools_with_ts = [(p, ts) for p, ts in pools_with_ts if ts is not None and p.get("id")]
+        if not pools_with_ts:
+            return []
+        # Use the oldest pool (highest-volume / most representative).
+        pools_with_ts.sort(key=lambda pt: pt[1])
+        oldest_pool = pools_with_ts[0][0]
+        # Fetch enough candles to cover the window; start well before now.
+        start_unix = int(__import__("time").time()) - (count + 2) * 5 * 60
+        candles = await self._pool_ohlcv(oldest_pool["id"], start_unix, interval="5m", limit=count + 2)
+        return candles[-count:] if len(candles) >= count else candles
+
     async def launch_price(self, token_address: str) -> Optional[float]:
         """Return the token's initial (launch) USD price.
 

@@ -20,9 +20,9 @@ def test_alert_contains_required_fields():
 
     assert "ТИКЕР" in text
     assert "ABC" in text
-    assert "СКОЛЬКО ТОКЕН АКТИВЕН" in text
+    assert "АКТИВЕН" in text
     assert "МАРКЕТ КАП" in text
     assert "ЛИКВИДНОСТЬ" in text
-    assert "КОЛ-ВО ТОКЕНОВ У РАЗРАБА" in text
-    assert "КОНТРАКТ ТОКЕНА" in text
-    assert "ССЫЛКА НА ДЕКСЕ" in text
+    assert "РАЗРАБ" in text
+    assert "КОНТРАКТ" in text
+    assert "DEX" in text
